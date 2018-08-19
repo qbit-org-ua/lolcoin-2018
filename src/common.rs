@@ -26,6 +26,15 @@ impl PartialEq for UserId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UserSecret(String);
+
+impl UserSecret {
+    pub fn new(secret: String) -> Self {
+        UserSecret(secret)
+    }
+}
+
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Coins(u64);
 

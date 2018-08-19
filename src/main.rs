@@ -4,6 +4,7 @@
 mod common;
 mod database;
 mod errors;
+mod forms;
 mod server;
 
 fn main() {

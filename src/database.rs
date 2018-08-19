@@ -1,24 +1,30 @@
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 use std::io::{BufRead, Write};
 use std::sync::{Arc, RwLock};
 
-use failure::{format_err, Error, ResultExt};
+use failure::{Error, ResultExt};
 use multi_mut::HashMapMultiMut;
 use serde_derive::{Deserialize, Serialize};
 use serde_json;
 
-use crate::common::{Coins, UserId};
+use crate::common::{Coins, UserId, UserSecret};
 use crate::errors::{TransferError, TransferErrorKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
-    #[serde(skip)]
+    #[serde(skip_deserializing)]
     user_id: UserId,
     #[serde(skip_serializing)]
-    secret: String,
+    secret: UserSecret,
     full_name: String,
     #[serde(skip_deserializing)]
     balance: Coins,
+}
+
+impl User {
+    pub fn get_user_id(&self) -> UserId {
+        self.user_id
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,12 +33,6 @@ pub struct UsersCollection {
 }
 
 impl UsersCollection {
-    pub fn new() -> Self {
-        Self {
-            in_memory_storage: HashMap::new(),
-        }
-    }
-
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
         let mut users_collection = Self {
@@ -40,17 +40,19 @@ impl UsersCollection {
         };
         for (user_id, user) in users_collection.in_memory_storage.iter_mut() {
             user.user_id = *user_id;
-            user.balance = user.balance.checked_add(Coins::new(100)).unwrap();
+            if user_id == &UserId::master() {
+                user.balance = Coins::new(1000000000);
+            }
         }
         Ok(users_collection)
     }
 
-    fn exists(&self, user_id: &UserId) -> bool {
-        self.in_memory_storage.contains_key(user_id)
-    }
-
     fn get(&self, user_id: &UserId) -> Option<&User> {
         self.in_memory_storage.get(user_id)
+    }
+
+    fn values(&self) -> hash_map::Values<UserId, User> {
+        self.in_memory_storage.values()
     }
 
     fn validate_transfer<'a>(
@@ -120,6 +122,7 @@ impl PersistentAppendOnlyStorage {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Transfer {
+    date: std::time::SystemTime,
     from: UserId,
     to: UserId,
     amount: Coins,
@@ -127,7 +130,7 @@ pub struct Transfer {
 
 impl Transfer {
     fn new(from: UserId, to: UserId, amount: Coins) -> Self {
-        Self { from, to, amount }
+        Self { date: std::time::SystemTime::now(), from, to, amount }
     }
 }
 
@@ -154,13 +157,6 @@ pub struct TransfersCollection {
 }
 
 impl TransfersCollection {
-    fn new<P: AsRef<std::path::Path>>(persistent_storage_filepath: P) -> std::io::Result<Self> {
-        Ok(Self {
-            in_memory_storage: Vec::new(),
-            persistent_storage: PersistentAppendOnlyStorage::new(persistent_storage_filepath)?,
-        })
-    }
-
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> std::io::Result<Self> {
         let mut in_memory_storage = Vec::new();
         let file = std::fs::File::open(&path)?;
@@ -188,41 +184,44 @@ type Records<T> = Arc<RwLock<T>>;
 
 pub struct DB {
     users: Records<UsersCollection>,
+    users_by_secret: Records<HashMap<UserSecret, UserId>>,
     transfers: Records<TransfersCollection>,
 }
 
 impl DB {
-    pub fn new(users: UsersCollection, transfers: TransfersCollection) -> Result<Self, Error> {
-        let db = Self {
+    pub fn new(mut users: UsersCollection, transfers: TransfersCollection) -> Result<Self, Error> {
+        users.apply_transfers(&transfers.in_memory_storage)?;
+        let mut users_by_secret = HashMap::new();
+        for user in users.values() {
+            users_by_secret.insert(user.secret.clone(), user.user_id);
+        }
+
+        Ok(Self {
             users: Arc::new(RwLock::new(users)),
+            users_by_secret: Arc::new(RwLock::new(users_by_secret)),
             transfers: Arc::new(RwLock::new(transfers)),
-        };
-        db.users
-            .write()
-            .or_else(|_| Err(format_err!("qwe")))?
-            .apply_transfers(
-                &db.transfers
-                    .read()
-                    .or_else(|_| Err(format_err!("asd")))?
-                    .in_memory_storage,
-            )?;
-        Ok(db)
+        })
     }
 
     pub fn get_user(&self, user_id: UserId) -> Option<User> {
         Some(self.users.read().ok()?.get(&user_id)?.clone())
     }
 
+    pub fn get_user_by_secret(&self, user_secret: &UserSecret) -> Option<User> {
+        self.get_user(*self.users_by_secret.read().ok()?.get(user_secret)?)
+    }
+
     pub fn get_users(&self) -> UsersCollection {
         (*self.users.read().unwrap()).clone()
     }
+
     pub fn get_transfers(&self) -> Vec<Transfer> {
         (*self.transfers.read().unwrap()).in_memory_storage.clone()
     }
 
     pub fn transfer(&self, from: UserId, to: UserId, amount: Coins) -> Result<(), TransferError> {
         let mut users = match self.users.write() {
-            Err(error) => {
+            Err(_) => {
                 return Err(TransferErrorKind::UnexpectedError(
                     "Could not lock DB.users to perform transfer.".into(),
                 ).into())

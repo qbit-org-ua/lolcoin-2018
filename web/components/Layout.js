@@ -14,7 +14,7 @@ export default class extends React.Component {
         <div className="nav">
           <div className="navbar">
             <Link href={{ pathname: '/' }}><a className="nav-link">Главная страница</a></Link>
-            <Link href={{ pathname: '/transfers/' }}><a className="nav-link">История переводов</a></Link>
+            <Link href={{ pathname: '/transfers' }}><a className="nav-link">История переводов</a></Link>
           </div>
         </div>
         {this.props.children}

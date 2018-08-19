@@ -47,7 +47,7 @@ export default class extends React.Component {
   render() {
     return (
       <Layout>
-        <h1 className="pt-5 pb-5">{`Все транзации ЛОЛкоинов`}</h1>
+        <h1 className="pt-5 pb-5">{`История переводов ЛОЛкоинов`}</h1>
         {(this.state.users === null || this.state.transfers === null) ? <Loading /> : <TransfersTable users={this.state.users} transfers={this.state.transfers} />}
       </Layout>
     )
